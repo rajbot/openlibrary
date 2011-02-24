@@ -47,6 +47,10 @@ $ available_loans = page.get_available_loans()
         </p>
 
         <p>
+          archive.org collections: $page.get_ia_meta_fields()['collection']
+        </P>
+
+        <p>
             overdrive_id - if set means can be borrowed digitally from an external library using Overdrive: $overdrive_id(page)
         </p>
         
@@ -79,6 +83,10 @@ $ available_loans = page.get_available_loans()
               $for loan in available_loans:
                  <tr><td>$loan</td></tr>
             </table>
+        </p>
+
+        <p>
+            edition.get_current_and_available_loans(): $page.get_current_and_available_loans()
         </p>
         
         <p>
