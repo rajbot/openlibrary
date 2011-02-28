@@ -27,6 +27,7 @@ import acs4
 
 lending_library_subject = u'Lending library'
 in_library_subject = u'In library'
+lending_subjects = set([lending_library_subject, in_library_subject])
 loanstatus_url = config.get('loanstatus_url')
 
 content_server = None
@@ -170,6 +171,47 @@ class borrow(delegate.page):
             
         # Action not recognized
         raise web.seeother(error_redirect)
+        
+# Handler for /books/{bookid}/{title}/_borrow_status
+class borrow_status(delegate.page):
+    path = "(/books/OL\d+M)/_borrow_status"
+    
+    def GET(self, key):
+    	global lending_subjects
+    	
+        i = web.input(callback=None)
+
+        edition = web.ctx.site.get(key)
+        
+        if not edition:
+            raise web.notfound()
+
+        edition.update_loan_status()            
+        available_formats = [loan['resource_type'] for loan in edition.get_available_loans()]
+        loan_available = len(available_formats) > 0
+        subjects = set([])
+        
+        for work in edition.get('works', []):
+	        for subject in work.get_subjects():
+	            if subject in lending_subjects:
+    	        	subjects.add(subject)
+        
+        output = {
+        	'id' : key,
+        	'loan_available': loan_available,
+        	'available_formats': available_formats,
+        	'lending_subjects': [lending_subject for lending_subject in subjects]
+        }
+
+        output_text = simplejson.dumps( output )
+        
+        content_type = "application/json"
+        if i.callback:
+            content_type = "text/javascript"
+            output_text = '%s ( %s );' % (i.callback, output_text)
+        
+        return delegate.RawText(output_text, content_type=content_type)
+
 
 class borrow_admin(delegate.page):
     path = "(/books/OL\d+M)/borrow_admin"
@@ -261,7 +303,7 @@ def can_borrow(edition):
         return True
     
     return False
-
+    
 @public
 def is_loan_available(edition, type):    
     resource_id = edition.get_lending_resource_id(type)
@@ -303,6 +345,7 @@ def get_bookreader_stream_url(itemid):
 @public
 def get_bookreader_host():
     return bookreader_host
+    
     
         
 ########## Helper Functions
@@ -478,7 +521,9 @@ def update_loan_status(resource_id):
         return
         
     loan = web.ctx.site.store.get(loan_key)
+    _update_loan_status(loan_key, loan, None)
     
+def _update_loan_status(loan_key, loan, bss_status = None):
     # If this is a BookReader loan, local version of loan is authoritative
     if loan['resource_type'] == 'bookreader':
         # delete loan record if has expired
@@ -488,9 +533,10 @@ def update_loan_status(resource_id):
         return
         
     # Load status from book status server
-    status = get_loan_status(resource_id)
-
-    update_loan_from_bss_status(loan_key, loan, status)
+    if bss_status is None:
+        bss_status = get_loan_status(loan['resource_id'])
+        
+    update_loan_from_bss_status(loan_key, loan, bss_status)
         
 def update_loan_from_bss_status(loan_key, loan, status):
     """Update the loan status in the private data store from BSS status"""
@@ -528,33 +574,32 @@ def update_all_loan_status():
     bss_statuses = get_all_loaned_out()
     bss_resource_ids = [status['resourceid'] for status in bss_statuses]
 
-    for resource_type in ['epub', 'pdf']:
-        # print "updating %s loans" % resource_type
+    offset = 0
+    limit = 500
+    all_updated = False
+
+    while not all_updated:
+        ol_loan_keys = [row['key'] for row in web.ctx.site.store.query('/type/loan', limit=limit, offset=offset)]
         
-        offset = 0
-        limit = 500
-        all_updated = False
-    
-        while not all_updated:
-            # Could just get epub and pdf loans here since they're the ones that use BSS
-            ol_loan_keys = [row['key'] for row in web.ctx.site.store.query('/type/loan', 'resource_type', resource_type, limit=limit, offset=offset)]
+        # Update status of each loan
+        for loan_key in ol_loan_keys:
+            loan = web.ctx.site.store.get(loan_key)
+            import sys; sys.stderr.write('XXXX %s' % loan)
             
-            # Update status of each loan
-            for loan_key in ol_loan_keys:
-                loan = web.ctx.site.store.get(loan_key)
+            bss_status = None
+            if resource_uses_bss(loan['resource_id']):
+                try:
+                    bss_status = bss_statuses[ bss_resource_ids.index(loan['resource_id']) ]
+                except ValueError:
+                    bss_status = None
+                    
+            _update_loan_status(loan_key, loan, bss_status)
                 
-                if resource_uses_bss(loan['resource_id']):
-                    try:
-                        status = bss_statuses[ bss_resource_ids.index(loan['resource_id']) ]
-                    except ValueError:
-                        status = None
-                        
-                    update_loan_from_bss_status(loan_key, loan, status)
-            
-            if len(ol_loan_keys) < limit:
-                all_updated = True
-            else:        
-                offset += len(ol_loan_keys)
+        
+        if len(ol_loan_keys) < limit:
+            all_updated = True
+        else:        
+            offset += len(ol_loan_keys)
             
 def resource_uses_bss(resource_id):
     """Returns true if the resource should use the BSS for status"""
